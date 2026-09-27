@@ -1,0 +1,75 @@
+// server/routers/doctor.router.js
+const express     = require('express')
+const router      = express.Router()
+const verifyToken = require('../middlewares/auth.middleware')
+const requireRole = require('../middlewares/role.middleware')
+const requirePasswordChangeCompleted = require('../middlewares/passwordChange.middleware')
+const { loginLimiter, otpRequestLimiter, otpVerifyLimiter, clinicalUploadLimiter, clinicalUploadStatusLimiter } = require('../middlewares/rateLimit.middleware')
+const {
+  login, checkAuth, logout,
+  getDashboard, getAppointments, getDailyAppointments, startConsultation,
+  saveConsultationDraft, finalizeConsultation, getConsultation, updateConsultation, addConsultationAmendment,
+  getPatientHistory, getBillingCatalog, uploadClinicalImage, getClinicalUploadScanStatus,
+  getInventoryItems, getMyRequests, getRequestLocations, submitRequest,
+  getMyQueue, callNext, markQueueDone,
+  getMySchedule, getMyScheduleAll, saveMyScheduleDay,
+  getMyUnavailableDates, saveMyUnavailableDate, deleteMyUnavailableDate,
+} = require('../controllers/doctor.controller')
+const commonCtrl = require('../controllers/common.controller')
+
+// ── Public ────────────────────────────────────────────────────────────────────
+router.post('/login',     loginLimiter, login)
+router.get('/check-auth', checkAuth)
+router.post('/logout',    logout)
+
+// ── Protected ─────────────────────────────────────────────────────────────────
+router.use(verifyToken('doctor_token'), requireRole('doctor'))
+router.post('/security/password/required', commonCtrl.completeRequiredPasswordChange)
+router.use(requirePasswordChangeCompleted)
+router.post('/security/password/request-code', otpRequestLimiter, commonCtrl.requestMyPasswordCode)
+router.post('/security/password/change', otpVerifyLimiter, commonCtrl.changeMyPassword)
+
+router.get('/notifications',                commonCtrl.listNotifications)
+router.patch('/notifications/read-all',     commonCtrl.readAllNotifications)
+router.patch('/notifications/:id/read',    commonCtrl.readNotification)
+router.get('/settings',                     commonCtrl.getMySettings)
+router.put('/settings',                     commonCtrl.saveMySettings)
+router.get('/dashboard',                     getDashboard)
+router.get('/appointments',                  getAppointments)
+router.get('/appointments/daily',            getDailyAppointments)
+router.patch('/appointments/:id/start',      startConsultation)
+
+// Consultation — draft and finalization are intentionally separate.
+router.put('/consultations/:appointmentId/draft', saveConsultationDraft)
+router.post('/consultations/:appointmentId/finalize', finalizeConsultation)
+// Backward-compatible finalization endpoint for older clients.
+router.post('/consultations/:appointmentId', finalizeConsultation)
+router.get('/consultations/:appointmentId',    getConsultation)
+router.patch('/consultations/:appointmentId',  updateConsultation)
+router.post('/consultations/:appointmentId/amendments', addConsultationAmendment)
+router.get('/billing/catalog',                 getBillingCatalog)
+router.post('/uploads/clinical', clinicalUploadLimiter, express.raw({ type: ['image/png', 'image/jpeg'], limit: '10mb' }), uploadClinicalImage)
+router.post('/uploads/clinical/status', clinicalUploadStatusLimiter, getClinicalUploadScanStatus)
+
+router.get('/patients/:id/history',          getPatientHistory)
+router.get('/inventory',                     getInventoryItems)
+router.get('/requests',                      getMyRequests)
+router.get('/inventory/locations',            getRequestLocations)
+router.post('/requests',                     submitRequest)
+
+// ── Doctor Queue Control ───────────────────────────────────────────────────────
+// NOTE: /queue/call-next MUST be before /queue/:id/done so Express doesn't
+// treat "call-next" as an :id param.
+router.get('/queue',              getMyQueue)
+router.patch('/queue/call-next',  callNext)
+router.patch('/queue/:id/done',   markQueueDone)
+
+// ── Doctor's Own Schedule ─────────────────────────────────────────────────────
+router.get('/schedule',     getMySchedule)
+router.get('/schedule/all', getMyScheduleAll)
+router.put('/schedule',     saveMyScheduleDay)
+router.get('/schedule/unavailable-dates',      getMyUnavailableDates)
+router.put('/schedule/unavailable-dates',      saveMyUnavailableDate)
+router.delete('/schedule/unavailable-dates/:date', deleteMyUnavailableDate)
+
+module.exports = router

@@ -1,0 +1,164 @@
+require('dotenv').config()
+require('express-async-errors')
+
+const express = require('express')
+const cors = require('cors')
+const cookieParser = require('cookie-parser')
+
+const app = express()
+const db = require('./db/connect')
+const { ensureAppSchema } = require('./utils/schema')
+const { registerClient, writeEvent, broadcast } = require('./utils/sse')
+const authenticate = require('./middlewares/auth.middleware')
+const { securityHeaders, originGuard, getAllowedOrigins } = require('./middlewares/httpSecurity.middleware')
+const { validateRuntimeConfig } = require('./utils/envValidation')
+
+const patientRouter = require('./routers/patient.router')
+const adminRouter = require('./routers/admin.router')
+const staffRouter = require('./routers/staff.router')
+const doctorRouter = require('./routers/doctor.router')
+const queueRouter = require('./routers/queue.router')
+const authRouter = require('./routers/auth.router')
+
+const PORT = process.env.PORT || 3000
+const allowedOrigins = getAllowedOrigins()
+
+app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false)
+app.use(securityHeaders)
+app.use(express.json({ limit: process.env.JSON_BODY_LIMIT || '1mb' }))
+app.use(express.urlencoded({ extended: false, limit: process.env.FORM_BODY_LIMIT || '256kb' }))
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.has(origin)) return callback(null, true)
+    return callback(new Error('Origin not allowed by CORS policy.'))
+  },
+  credentials: true,
+}))
+app.use(cookieParser())
+app.use(originGuard)
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' })
+})
+
+// Readiness checks the dependency that must be available before this instance receives traffic.
+app.get('/api/ready', async (req, res) => {
+  try {
+    await db.query('SELECT 1 AS result')
+    return res.json({ status: 'ready' })
+  } catch (err) {
+    console.error('[readiness] database unavailable', { message: err.message })
+    return res.status(503).json({ status: 'not_ready' })
+  }
+})
+
+// Authenticated SSE. Use role-scoped endpoints so a browser that legitimately
+// has multiple role cookies (for example Admin in one tab and Doctor in another)
+// cannot have the stream authenticated as whichever cookie happens to be checked first.
+const streamEvents = (req, res) => {
+  const role = req.user.role
+  const userId = req.user.id
+
+  res.setHeader('Content-Type', 'text/event-stream')
+  res.setHeader('Cache-Control', 'no-cache, no-transform')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  const unregister = registerClient(role, userId, res)
+  writeEvent(res, 'connected', { role, userId, connectedAt: new Date().toISOString() })
+
+  const ping = setInterval(() => {
+    if (res.writableEnded) return
+    res.write(': ping\n\n')
+  }, 30000)
+
+  req.on('close', () => {
+    clearInterval(ping)
+    unregister()
+    if (!res.writableEnded) res.end()
+  })
+}
+
+for (const role of ['admin', 'staff', 'doctor', 'patient']) {
+  app.get(`/api/events/${role}`, authenticate(`${role}_token`), streamEvents)
+}
+
+// The generic stream was ambiguous when a browser held more than one role cookie.
+// Require every client to choose the role-scoped endpoint explicitly.
+app.get('/api/events', (req, res) => res.status(410).json({
+  code: 'SSE_ROLE_REQUIRED',
+  message: 'Use the role-specific realtime endpoint.',
+}))
+
+app.use('/api/patient', patientRouter)
+app.use('/api/admin', adminRouter)
+app.use('/api/staff', staffRouter)
+app.use('/api/doctor', doctorRouter)
+app.use('/api/auth', authRouter)
+app.use('/api/queue', queueRouter)
+
+app.use((err, req, res, next) => {
+  const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+  console.error('[server-error]', {
+    requestId,
+    method: req.method,
+    path: req.originalUrl,
+    ip: req.ip,
+    code: err.code,
+    message: err.message,
+    stack: process.env.NODE_ENV === 'production' ? undefined : err.stack,
+  })
+  if (res.headersSent) return next(err)
+
+  const databaseSchemaCodes = new Set(['ER_BAD_FIELD_ERROR', 'ER_NO_SUCH_TABLE'])
+  const databaseInputCodes = new Set(['ER_DATA_TOO_LONG', 'ER_WARN_DATA_OUT_OF_RANGE', 'ER_TRUNCATED_WRONG_VALUE', 'ER_TRUNCATED_WRONG_VALUE_FOR_FIELD'])
+  const schemaMismatch = databaseSchemaCodes.has(String(err.code || ''))
+  const databaseInputError = databaseInputCodes.has(String(err.code || ''))
+  const payloadTooLarge = Number(err.status || err.statusCode) === 413 || String(err.type || '') === 'entity.too.large'
+  const status = schemaMismatch ? 503 : payloadTooLarge ? 413 : databaseInputError ? 400 : (Number(err.statusCode || err.status) || 500)
+  const expose = status >= 400 && status < 500 && !/^ER_/.test(String(err.code || ''))
+  const responseCode = schemaMismatch
+    ? 'SCHEMA_MIGRATION_REQUIRED'
+    : payloadTooLarge
+      ? 'FILE_TOO_LARGE'
+      : databaseInputError
+        ? 'VALIDATION_ERROR'
+        : (err.code && !/^ER_/.test(String(err.code)) ? err.code : undefined)
+  const message = schemaMismatch
+    ? 'The database schema is out of date for this feature. Run `npm run migrate`, then restart the server.'
+    : payloadTooLarge
+      ? 'The uploaded file is larger than the allowed limit.'
+      : databaseInputError
+        ? 'One or more values are too long or invalid for this field. Review the form and try again.'
+        : expose
+          ? (err.publicMessage || err.message || 'Request could not be completed.')
+          : 'Something went wrong while processing your request.'
+  res.status(status).json({ message, code: responseCode, request_id: requestId })
+})
+
+const start = async () => {
+  try {
+    const { warnings } = validateRuntimeConfig()
+    warnings.forEach((warning) => console.warn(`[startup] ${warning}`))
+
+    if (String(process.env.RUN_SCHEMA_MIGRATIONS_ON_STARTUP || 'false').toLowerCase() === 'true') {
+      console.warn('[startup] RUN_SCHEMA_MIGRATIONS_ON_STARTUP=true; applying schema migrations before serving traffic.')
+      await ensureAppSchema()
+    }
+    const [rows] = await db.query('SELECT 1 AS result')
+    console.log(`MySQL connected. Test query: ${rows[0].result}`)
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`)
+      require('./utils/reminder')
+    })
+  } catch (err) {
+    console.error('Failed to start server:', err)
+    process.exitCode = 1
+    await db.end().catch(() => {})
+  }
+}
+
+if (require.main === module) start()
+
+module.exports = { app, start, broadcast }

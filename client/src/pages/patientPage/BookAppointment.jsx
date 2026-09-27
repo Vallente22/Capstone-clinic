@@ -1,0 +1,651 @@
+// client/src/pages/patientPage/BookAppointment.jsx
+// REDESIGNED: 5-step wizard, mobile-first, touch-friendly calendar, clean cards
+
+import { useEffect, useState } from 'react'
+import { NavLink, useSearchParams } from 'react-router-dom'
+import {
+  getAppointmentReasons, getBookingServices, getDoctorsAvailability, getDoctorSchedule, getDoctorTakenSlots, getDoctorUnavailableDates, bookAppointment,
+} from '../../services/patient.service'
+import {
+  MdCheck, MdChevronLeft, MdChevronRight, MdFace, MdMedicalServices,
+  MdCalendarToday, MdAccessTime, MdPerson, MdAdd,
+  MdArrowForward,
+} from 'react-icons/md'
+import { getLocalDateOnly } from '../../utils/date'
+import {
+  buildSlotsForScheduleDate,
+  buildUnavailableDateSet,
+  isDoctorAvailableOnDate,
+  scheduleSummary,
+} from '../../utils/schedule'
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const CLINIC_TYPES = [
+  { id: 'medical', label: 'General Medicine', desc: 'Check-ups, general health concerns, minor procedures.',   Icon: MdMedicalServices, from: 'from-sky-500',     to: 'to-sky-600',     light: 'bg-sky-50',     border: 'border-sky-200',     check: 'bg-sky-500'     },
+  { id: 'derma',   label: 'Dermatology',      desc: 'Skin, hair & nail conditions, cosmetic procedures.',      Icon: MdFace,            from: 'from-emerald-500', to: 'to-emerald-600', light: 'bg-emerald-50', border: 'border-emerald-200', check: 'bg-emerald-500' },
+]
+const MONTHS  = ['January','February','March','April','May','June','July','August','September','October','November','December']
+const DAYS    = ['Su','Mo','Tu','We','Th','Fr','Sa']
+const STEPS   = ['Clinic','Service','Doctor','Schedule','Details','Confirm']
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function getDaysInMonth(y, m) { return new Date(y, m+1, 0).getDate() }
+function getFirstDay(y, m)    { return new Date(y, m, 1).getDay() }
+function pad(n) { return String(n).padStart(2, '0') }
+function toISO(y, m, d) { return `${y}-${pad(m+1)}-${pad(d)}` }
+
+// ── Step bar ──────────────────────────────────────────────────────────────────
+const StepBar = ({ current }) => (
+  <div className="flex items-center mb-6">
+    {STEPS.map((label, i) => {
+      const done = i < current, active = i === current
+      return (
+        <div key={label} className="flex items-center flex-1 last:flex-none">
+          <div className="flex flex-col items-center gap-1">
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all
+              ${done ? 'bg-emerald-500 text-white' : active ? 'bg-[#0b1a2c] text-emerald-400 ring-2 ring-emerald-400/30' : 'bg-slate-100 text-slate-400'}`}>
+              {done ? <MdCheck className="text-[13px]" /> : i+1}
+            </div>
+            <span className={`text-[9px] font-bold hidden sm:block ${active?'text-slate-700':done?'text-emerald-500':'text-slate-400'}`}>
+              {label}
+            </span>
+          </div>
+          {i < STEPS.length-1 && (
+            <div className={`flex-1 h-0.5 mx-1 mb-3 rounded-full transition-all ${done?'bg-emerald-400':'bg-slate-200'}`} />
+          )}
+        </div>
+      )
+    })}
+  </div>
+)
+
+// ── Step 1: Clinic type ───────────────────────────────────────────────────────
+const StepClinicType = ({ value, onChange }) => (
+  <div className="space-y-3">
+    <div>
+      <h2 className="text-lg font-bold text-slate-800">Choose Clinic Type</h2>
+      <p className="text-sm text-slate-500 mt-0.5">Which type of consultation do you need?</p>
+    </div>
+    {CLINIC_TYPES.map(({ id, label, desc, Icon, from, to, light, border, check }) => (
+      <button key={id} onClick={() => onChange(id)}
+        className={`w-full flex items-center gap-4 p-5 rounded-2xl border-2 text-left transition-all
+          active:scale-[0.99]
+          ${value===id ? `${border} ${light}` : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+        <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 bg-gradient-to-br ${from} ${to}`}>
+          <Icon className="text-white text-[22px]" />
+        </div>
+        <div className="flex-1 text-left">
+          <p className="font-bold text-sm text-slate-800">{label}</p>
+          <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{desc}</p>
+        </div>
+        <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-all
+          ${value===id ? `${check} border-transparent` : 'border-slate-300 bg-white'}`}>
+          {value===id && <MdCheck className="text-white text-[13px]" />}
+        </div>
+      </button>
+    ))}
+  </div>
+)
+
+// ── Step 2: Service ───────────────────────────────────────────────────────────
+const StepService = ({ value, onChange, services, loading, error, onRetry }) => (
+  <div className="space-y-3">
+    <div>
+      <h2 className="text-lg font-bold text-slate-800">Choose a Service</h2>
+      <p className="text-sm text-slate-500 mt-0.5">Select the service you would like to book. Final charges may change if additional services, medicines, or supplies are used during your visit.</p>
+    </div>
+    {loading && <div className="py-10 text-center text-sm text-slate-400">Loading clinic services…</div>}
+    {!loading && error && <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-center text-sm text-red-600">We couldn't load services.<button onClick={onRetry} className="ml-2 font-bold">Try again</button></div>}
+    {!loading && !error && services.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center"><p className="font-bold text-slate-700">No services are currently available for online booking in this clinic.</p><p className="mt-1 text-xs text-slate-400">Please contact the clinic for assistance or choose another clinic type.</p></div>}
+    {!loading && !error && services.map((service) => (
+      <button key={service.id} onClick={() => onChange(service)} className={`w-full rounded-2xl border-2 p-4 text-left transition-all ${Number(value?.id)===Number(service.id) ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm font-bold text-slate-800">{service.service_name}</p>
+            <p className="mt-0.5 text-xs text-slate-500">{service.category || 'Clinic service'}</p>
+          </div>
+          <div className="shrink-0 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Standard Price</p>
+            <p className="text-sm font-black text-emerald-700">₱{Number(service.default_price || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          </div>
+        </div>
+      </button>
+    ))}
+  </div>
+)
+
+// ── Step 3: Doctor ────────────────────────────────────────────────────────────
+const StepDoctor = ({ clinicType, value, onChange, doctorList, loadingDoctors, doctorError, onRetry }) => {
+  const list = doctorList[clinicType] || []
+  const ct = CLINIC_TYPES.find(c => c.id === clinicType)
+  return (
+    <div className="space-y-3">
+      <div>
+        <h2 className="text-lg font-bold text-slate-800">Select a Doctor</h2>
+        <p className="text-sm text-slate-500 mt-0.5">Doctors available for {ct?.label}.</p>
+      </div>
+      {loadingDoctors && <div className="py-10 text-center text-slate-400 text-sm">Loading available doctors...</div>}
+      {!loadingDoctors && doctorError && <div className="rounded-2xl border border-red-200 bg-red-50 p-5 text-center text-sm text-red-600">We couldn't load doctors.<button onClick={onRetry} className="ml-2 font-bold">Try again</button></div>}
+      {!loadingDoctors && !doctorError && list.length === 0 && <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center"><p className="font-bold text-slate-700">No doctors are currently available for {ct?.label}.</p><p className="mt-1 text-xs text-slate-400">Choose another clinic type or check again later.</p></div>}
+      {list.map(doc => (
+        <button key={doc.id} onClick={() => onChange(doc)}
+          className={`w-full flex items-center gap-4 p-4 sm:p-5 rounded-2xl border-2 text-left transition-all active:scale-[0.99]
+            ${value?.id===doc.id ? 'border-emerald-400 bg-emerald-50' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
+          <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 font-black text-base
+            ${value?.id===doc.id ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-500'}`}>
+            {(doc.full_name||doc.name).replace(/^Dr\.?\s*/i,'').split(' ').map(n=>n[0]).slice(0,2).join('').toUpperCase()||'DR'}
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="font-bold text-sm text-slate-800 truncate">{doc.full_name||doc.name}</p>
+            <div className="mt-1 space-y-0.5 text-xs text-slate-500">
+              <p><span className="font-semibold text-slate-600">Specialty:</span> {String(doc.specialty || '').trim() || 'Not specified'}</p>
+              <p><span className="font-semibold text-slate-600">Clinic:</span> {ct?.label || (doc.clinic_type === 'derma' ? 'Dermatology' : 'General Medicine')}</p>
+            </div>
+            {(doc.weekly_schedule||[]).filter(s=>Number(s.is_active)!==0).length>0 ? <p className="mt-1 text-[11px] text-emerald-600">{(doc.weekly_schedule||[]).filter(s=>Number(s.is_active)!==0).slice(0,3).map(s=>s.day_of_week.slice(0,3)).join(', ')} · {scheduleSummary((doc.weekly_schedule||[]).find(s=>Number(s.is_active)!==0))}</p> : <p className="mt-1 text-[11px] font-semibold text-amber-600">No online schedule configured</p>}
+            {doc.next_available && <p className="mt-1 text-[11px] font-bold text-emerald-700">Next available: {doc.next_available.date} · {doc.next_available.time}</p>}
+          </div>
+          <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-all
+            ${value?.id===doc.id ? 'bg-emerald-500 border-transparent' : 'border-slate-300 bg-white'}`}>
+            {value?.id===doc.id && <MdCheck className="text-white text-[13px]" />}
+          </div>
+        </button>
+      ))}
+    </div>
+  )
+}
+
+// ── Step 4: Schedule ──────────────────────────────────────────────────────────
+const StepSchedule = ({ date, time, onDateChange, onTimeChange, timeSlots, doctorSchedules, unavailableDates }) => {
+  const today = new Date()
+  const [viewYear,  setViewYear]  = useState(today.getFullYear())
+  const [viewMonth, setViewMonth] = useState(today.getMonth())
+  const blockedDates = buildUnavailableDateSet(unavailableDates)
+
+  const daysInMonth = getDaysInMonth(viewYear, viewMonth)
+  const firstDay    = getFirstDay(viewYear, viewMonth)
+  const cells = [...Array(firstDay).fill(null), ...Array.from({length:daysInMonth},(_,i)=>i+1)]
+
+  const isPast = d => new Date(viewYear,viewMonth,d) < new Date(today.getFullYear(),today.getMonth(),today.getDate())
+  const isUnavailable = d => {
+    const dateString = toISO(viewYear, viewMonth, d)
+    if (blockedDates.has(dateString)) return true
+    if (!doctorSchedules?.length) return false
+    return !isDoctorAvailableOnDate(dateString, doctorSchedules, unavailableDates)
+  }
+  const isSelected = d => date === toISO(viewYear,viewMonth,d)
+  const isToday    = d => d===today.getDate()&&viewMonth===today.getMonth()&&viewYear===today.getFullYear()
+
+  const prevM = () => { if(viewMonth===0){setViewMonth(11);setViewYear(y=>y-1)}else setViewMonth(m=>m-1) }
+  const nextM = () => { if(viewMonth===11){setViewMonth(0);setViewYear(y=>y+1)}else setViewMonth(m=>m+1) }
+
+  const todayStr = getLocalDateOnly(today)
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-bold text-slate-800">Pick a Date & Time</h2>
+        <p className="text-sm text-slate-500 mt-0.5">Select a date then choose an available slot.</p>
+      </div>
+
+      {/* Calendar */}
+      <div className="bg-slate-50 border border-slate-200 rounded-2xl p-4">
+        <div className="flex items-center justify-between mb-3">
+          <button onClick={prevM}
+            className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white hover:shadow-sm transition-all">
+            <MdChevronLeft className="text-slate-500 text-[20px]" />
+          </button>
+          <p className="text-sm font-bold text-slate-800">{MONTHS[viewMonth]} {viewYear}</p>
+          <button onClick={nextM}
+            className="w-9 h-9 flex items-center justify-center rounded-xl hover:bg-white hover:shadow-sm transition-all">
+            <MdChevronRight className="text-slate-500 text-[20px]" />
+          </button>
+        </div>
+
+        <div className="grid grid-cols-7 mb-1">
+          {DAYS.map(d => <p key={d} className="text-center text-[10px] font-bold text-slate-400 py-1">{d}</p>)}
+        </div>
+
+        <div className="grid grid-cols-7 gap-y-1">
+          {cells.map((d, i) => {
+            if (!d) return <div key={`e${i}`} />
+            const past = isPast(d), unavail = isUnavailable(d)
+            const sel  = isSelected(d), td = isToday(d)
+            const disabled = past || unavail
+            return (
+              <button key={d} disabled={disabled}
+                onClick={() => { onDateChange(toISO(viewYear,viewMonth,d)); onTimeChange('') }}
+                className={`h-9 sm:h-10 w-full rounded-xl text-xs font-semibold transition-all
+                  ${sel ? 'bg-[#0b1a2c] text-emerald-400 font-black shadow-md ring-2 ring-emerald-400/20' : ''}
+                  ${!sel && td && !disabled ? 'ring-2 ring-emerald-400 text-emerald-700 bg-emerald-50' : ''}
+                  ${!sel && !td && !disabled ? 'hover:bg-emerald-50 hover:text-emerald-700 text-slate-700' : ''}
+                  ${disabled ? 'text-slate-300 cursor-not-allowed' : ''}`}>
+                {d}
+              </button>
+            )
+          })}
+        </div>
+
+        {/* Legend */}
+        <div className="flex items-center gap-3 mt-3 pt-3 border-t border-slate-200">
+          <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+            <span className="w-3 h-3 rounded-full bg-emerald-50 ring-2 ring-emerald-400 inline-block" /> Today
+          </span>
+          <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+            <span className="w-3 h-3 rounded-full bg-[#0b1a2c] inline-block" /> Selected
+          </span>
+          <span className="flex items-center gap-1.5 text-[10px] text-slate-400">
+            <span className="w-3 h-3 rounded-full bg-slate-100 inline-block" /> Unavailable
+          </span>
+        </div>
+      </div>
+
+      {/* Time slots */}
+      {date && (
+        <div>
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2 flex items-center gap-1">
+            <MdAccessTime className="text-[13px]" /> Available Time Slots
+          </p>
+          {timeSlots.length === 0 ? (
+            <div className="text-center py-5 bg-slate-50 rounded-2xl border border-slate-200">
+              <p className="text-sm text-slate-400">
+                {date===todayStr ? 'No more slots for today. Pick another date.' : 'No slots available.'}
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+              {timeSlots.map(slot => (
+                <button key={slot} onClick={() => onTimeChange(slot)}
+                  className={`py-3 rounded-xl text-xs font-semibold transition-all border-2
+                    ${time===slot ? 'bg-[#0b1a2c] text-emerald-400 border-transparent shadow-md' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300 hover:bg-emerald-50'}`}>
+                  {slot}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Step 5: Details ───────────────────────────────────────────────────────────
+const StepDetails = ({ reason, notes, reasonOptions, loadingReasons, onReasonChange, onNotesChange }) => (
+  <div className="space-y-4">
+    <div>
+      <h2 className="text-lg font-bold text-slate-800">Visit Details</h2>
+      <p className="text-sm text-slate-500 mt-0.5">Choose a visit reason. Use Additional Notes for any extra details.</p>
+    </div>
+    <div>
+      <p className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-2">
+        Reason for Visit <span className="text-red-400">*</span>
+      </p>
+      <div className="grid grid-cols-2 gap-2">
+        {(reasonOptions || []).map((option) => (
+          <button key={option.id || option.label} onClick={() => onReasonChange(option.label)}
+            className={`p-3 rounded-2xl text-xs font-semibold text-left border-2 transition-all active:scale-[0.98]
+              ${reason===option.label ? 'border-emerald-400 bg-emerald-50 text-emerald-800' : 'border-slate-200 bg-white hover:border-slate-300 text-slate-700'}`}>
+            {option.label}
+          </button>
+        ))}
+      </div>
+      {loadingReasons && (
+        <p className="mt-2 text-xs text-slate-400">Loading reason options…</p>
+      )}
+    </div>
+    <div>
+      <label className="block text-xs font-bold text-slate-500 uppercase tracking-widest mb-1.5">
+        Additional Notes <span className="normal-case font-normal text-slate-300">(optional)</span>
+      </label>
+      <textarea value={notes} onChange={e => onNotesChange(e.target.value)} rows={3}
+        placeholder="Any symptoms, concerns, or information the doctor should know…"
+        className="w-full text-sm text-slate-700 placeholder-slate-300 bg-slate-50 border-2 border-slate-200
+          rounded-2xl px-4 py-3 focus:outline-none focus:border-emerald-400 focus:ring-2
+          focus:ring-emerald-400/10 transition-all resize-none" />
+    </div>
+  </div>
+)
+
+// ── Step 6: Confirm ───────────────────────────────────────────────────────────
+const StepConfirm = ({ form, policyAccepted, onPolicyAcceptedChange }) => {
+  const ct   = CLINIC_TYPES.find(c => c.id === form.clinicType)
+  const Icon = ct?.Icon || MdMedicalServices
+  const [y,m,d] = (form.date||'').split('-').map(Number)
+  const dateLabel = y&&m&&d ? new Date(y,m-1,d).toLocaleDateString('en-PH',{weekday:'long',year:'numeric',month:'long',day:'numeric'}) : '—'
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-lg font-bold text-slate-800">Confirm Appointment</h2>
+        <p className="text-sm text-slate-500 mt-0.5">Review your details before booking.</p>
+      </div>
+
+      <div className="bg-gradient-to-br from-slate-800 to-[#0b1a2c] rounded-2xl p-5 text-white">
+        <div className="flex items-center gap-3 mb-4 pb-4 border-b border-white/10">
+          <div className={`w-11 h-11 rounded-xl flex items-center justify-center bg-gradient-to-br ${ct?.from} ${ct?.to}`}>
+            <Icon className="text-white text-[20px]" />
+          </div>
+          <div>
+            <p className="font-bold text-sm">{ct?.label}</p>
+            <p className="text-xs text-white/60">{form.doctor?.full_name || form.doctor?.name}</p>
+          </div>
+        </div>
+        {[
+          { label: 'Service', value: form.service?.service_name, icon: MdMedicalServices },
+          { label: 'Date',   value: dateLabel,   icon: MdCalendarToday },
+          { label: 'Time',   value: form.time,   icon: MdAccessTime    },
+          { label: 'Reason', value: form.reason, icon: MdPerson        },
+        ].filter(r=>r.value).map(({ label, value, icon: I }) => (
+          <div key={label} className="flex items-center gap-3 mb-3 last:mb-0">
+            <I className="text-white/40 text-[14px] shrink-0" />
+            <div className="flex-1 min-w-0">
+              <p className="text-[10px] text-white/40 font-medium">{label}</p>
+              <p className="text-sm font-semibold truncate">{value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {form.service && (
+        <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+          <div className="flex items-center justify-between gap-3">
+            <div><p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Requested Service</p><p className="mt-1 text-sm font-bold text-emerald-900">{form.service.service_name}</p></div>
+            <p className="text-sm font-black text-emerald-800">₱{Number(form.service.default_price || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-emerald-700">This is the standard clinic price. Final charges may change if additional services, medicines, or supplies are used during your visit.</p>
+        </div>
+      )}
+
+      {form.notes && (
+        <div className="bg-slate-50 rounded-xl px-4 py-3 border border-slate-200">
+          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Notes</p>
+          <p className="text-sm text-slate-600 leading-relaxed">{form.notes}</p>
+        </div>
+      )}
+
+      <label className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 flex items-start gap-3">
+        <input
+          type="checkbox"
+          checked={policyAccepted}
+          onChange={(e) => onPolicyAcceptedChange(e.target.checked)}
+          className="mt-0.5 h-4 w-4 rounded border-emerald-300 text-emerald-600"
+        />
+        <span className="text-xs text-emerald-700 leading-relaxed">
+          I agree to the online booking policy: I will attend on time, cancel or reschedule if I cannot come, and understand that no-shows or fake bookings may be reviewed or cancelled by the clinic.
+        </span>
+      </label>
+    </div>
+  )
+}
+
+// ── Success ───────────────────────────────────────────────────────────────────
+const SuccessScreen = ({ onReset }) => (
+  <div className="flex flex-col items-center text-center py-10">
+    <div className="w-20 h-20 rounded-full bg-emerald-100 flex items-center justify-center mb-5">
+      <MdCheck className="text-emerald-500 text-[40px]" />
+    </div>
+    <h2 className="text-xl font-bold text-slate-800 mb-2">Appointment Booked!</h2>
+    <p className="text-sm text-slate-500 max-w-xs mb-8 leading-relaxed">
+      Your appointment has been scheduled. You can view it in <strong>My Appointments</strong>.
+    </p>
+    <div className="flex flex-col sm:flex-row gap-3 w-full max-w-xs">
+      <button onClick={onReset}
+        className="flex-1 py-3 text-sm font-semibold text-slate-600 border border-slate-200 rounded-xl hover:bg-slate-50 transition-colors">
+        Book Another
+      </button>
+      <NavLink to="/patient/appointments"
+        className="flex-1 py-3 text-sm font-bold text-white bg-emerald-500 hover:bg-emerald-600 rounded-xl transition-colors text-center">
+        My Appointments
+      </NavLink>
+    </div>
+  </div>
+)
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+const BookAppointment = () => {
+  const [step, setStep] = useState(0)
+  const [done, setDone] = useState(false)
+  const [form, setForm] = useState({
+    clinicType: '', service: null, doctor: null, date: null, time: '', reason: '', notes: '',
+  })
+  const [policyAccepted, setPolicyAccepted] = useState(false)
+  const [doctorList,      setDoctorList]      = useState({ medical: [], derma: [] })
+  const [loadingDoctors, setLoadingDoctors] = useState(true)
+  const [doctorError, setDoctorError] = useState('')
+  const [searchParams] = useSearchParams()
+  const [timeSlots,       setTimeSlots]       = useState([])
+  const [doctorSchedules, setDoctorSchedules] = useState([])
+  const [doctorUnavailableDates, setDoctorUnavailableDates] = useState([])
+  const [reasonOptions, setReasonOptions] = useState([])
+  const [loadingReasons, setLoadingReasons] = useState(false)
+  const [services, setServices] = useState([])
+  const [loadingServices, setLoadingServices] = useState(false)
+  const [serviceError, setServiceError] = useState('')
+
+  const loadDoctors = async () => {
+    setLoadingDoctors(true); setDoctorError('')
+    try {
+      const summary = await getDoctorsAvailability({ startDate: getLocalDateOnly(), days: 7 })
+      const enriched = Array.isArray(summary?.doctors) ? summary.doctors : []
+      const doctorClinic = (d) => d.clinic_type || (String(d.specialty || '').toLowerCase().includes('derm') ? 'derma' : 'medical')
+      const derma = enriched.filter(d => doctorClinic(d) === 'derma' && d.weekly_schedule.some(x => Number(x.is_active)!==0))
+      const medical = enriched.filter(d => doctorClinic(d) === 'medical' && d.weekly_schedule.some(x => Number(x.is_active)!==0))
+      setDoctorList({ medical, derma })
+      const preDoctor = Number(searchParams.get('doctor')); const preClinic = searchParams.get('clinic')
+      if (preDoctor && ['medical','derma'].includes(preClinic)) {
+        const found = enriched.find(d => Number(d.id)===preDoctor)
+        if (found) setForm(f => ({...f, clinicType:preClinic, doctor:found}))
+      }
+    } catch (err) { setDoctorError(err.message || 'Failed to load doctors.'); setDoctorList({medical:[],derma:[]}) }
+    finally { setLoadingDoctors(false) }
+  }
+  useEffect(() => { loadDoctors() }, [])
+
+  const loadServices = async () => {
+    if (!form.clinicType) { setServices([]); return }
+    setLoadingServices(true); setServiceError('')
+    try {
+      const rows = await getBookingServices(form.clinicType)
+      setServices(Array.isArray(rows) ? rows : [])
+    } catch (err) {
+      setServices([])
+      setServiceError(err.message || 'Failed to load clinic services.')
+    } finally {
+      setLoadingServices(false)
+    }
+  }
+
+  useEffect(() => {
+    setForm((current) => ({ ...current, service: null }))
+    loadServices()
+  }, [form.clinicType])
+
+  useEffect(() => {
+    if (!form.clinicType) {
+      setReasonOptions([])
+      return
+    }
+
+    setLoadingReasons(true)
+    getAppointmentReasons(form.clinicType)
+      .then((rows) => setReasonOptions(Array.isArray(rows) ? rows : []))
+      .catch(() => setReasonOptions([]))
+      .finally(() => setLoadingReasons(false))
+  }, [form.clinicType])
+
+  useEffect(() => {
+    if (!form.doctor) {
+      setDoctorSchedules([])
+      setDoctorUnavailableDates([])
+      setTimeSlots([])
+      return
+    }
+
+    Promise.all([
+      getDoctorSchedule(form.doctor.id),
+      getDoctorUnavailableDates(form.doctor.id),
+    ])
+      .then(([schedules, blockedDates]) => {
+        setDoctorSchedules(Array.isArray(schedules) ? schedules : [])
+        setDoctorUnavailableDates(Array.isArray(blockedDates) ? blockedDates : [])
+      })
+      .catch(() => {
+        setDoctorSchedules([])
+        setDoctorUnavailableDates([])
+      })
+  }, [form.doctor])
+
+  useEffect(() => {
+    if (!form.doctor || !form.date || !doctorSchedules.length) { setTimeSlots([]); return }
+    if (!isDoctorAvailableOnDate(form.date, doctorSchedules, doctorUnavailableDates)) {
+      setTimeSlots([])
+      return
+    }
+
+    let cancelled = false
+
+    getDoctorTakenSlots(form.doctor.id, form.date)
+      .then((reservedSlots) => {
+        if (cancelled) return
+        const available = buildSlotsForScheduleDate(form.date, doctorSchedules, {
+          takenSlots: Array.isArray(reservedSlots) ? reservedSlots : [],
+          unavailableDates: doctorUnavailableDates,
+        })
+
+        setTimeSlots(available)
+        setForm((prev) => (prev.time && !available.includes(prev.time) ? { ...prev, time: '' } : prev))
+      })
+      .catch(() => {
+        if (cancelled) return
+        setTimeSlots([])
+      })
+
+    return () => { cancelled = true }
+  }, [form.date, form.doctor, doctorSchedules, doctorUnavailableDates])
+
+  const set = key => val => setForm(f => ({ ...f, [key]: val }))
+
+  const canNext = () => {
+    if (step===0) return !!form.clinicType
+    if (step===1) return !!form.service
+    if (step===2) return !!form.doctor
+    if (step===3) return !!form.date && !!form.time
+    if (step===4) return !!form.reason
+    if (step===5) return policyAccepted
+    return true
+  }
+
+  const handleNext = () => {
+    if (step < 5) setStep(s => s+1)
+    else handleConfirm()
+  }
+
+  const handleConfirm = async () => {
+    try {
+      await bookAppointment({
+        doctor_id:        form.doctor.id,
+        clinic_type:      form.clinicType,
+        requested_service_id: form.service.id,
+        reason:           form.reason,
+        appointment_date: form.date,
+        appointment_time: form.time,
+        notes:            form.notes || '',
+      })
+      setDone(true)
+    } catch (err) {
+      alert(err.message)
+    }
+  }
+
+  const handleReset = () => {
+    setStep(0); setDone(false)
+    setTimeSlots([]); setDoctorSchedules([])
+    setPolicyAccepted(false)
+    setForm({ clinicType:'', service:null, doctor:null, date:null, time:'', reason:'', notes:'' })
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+
+      {/* Header */}
+      <div>
+        <h1 className="text-xl lg:text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <MdAdd className="text-emerald-500 text-[22px]" /> Book an Appointment
+        </h1>
+        <p className="text-xs lg:text-sm text-slate-500 mt-0.5">Schedule your clinic visit in a few steps.</p>
+      </div>
+
+      <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3">
+        <p className="text-xs font-bold uppercase tracking-widest text-amber-700">Online Booking Policy</p>
+        <div className="mt-2 grid gap-2 text-xs leading-relaxed text-amber-800 sm:grid-cols-2">
+          <p>Use real patient details and keep only one active booking per doctor.</p>
+          <p>Arrive at least 10 minutes before your schedule.</p>
+          <p>Cancel or reschedule early if you cannot attend.</p>
+          <p>No-shows and fake bookings may require staff review before approval.</p>
+        </div>
+      </div>
+
+      {/* Main card */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+
+        {/* Progress strip */}
+        <div className="h-1 bg-slate-100">
+          <div className="h-1 bg-emerald-500 transition-all duration-500 rounded-full"
+            style={{ width: `${(step/5)*100}%` }} />
+        </div>
+
+        <div className="p-5 sm:p-8">
+          {!done && <StepBar current={step} />}
+
+          {done ? (
+            <SuccessScreen onReset={handleReset} />
+          ) : (
+            <>
+              {step===0 && <StepClinicType value={form.clinicType} onChange={(clinicType) => setForm((current) => ({ ...current, clinicType, service: null, doctor: null, date: null, time: '' }))} />}
+              {step===1 && <StepService value={form.service} onChange={set('service')} services={services} loading={loadingServices} error={serviceError} onRetry={loadServices} />}
+              {step===2 && <StepDoctor clinicType={form.clinicType} value={form.doctor} onChange={set('doctor')} doctorList={doctorList} loadingDoctors={loadingDoctors} doctorError={doctorError} onRetry={loadDoctors} />}
+              {step===3 && (
+                <StepSchedule
+                  date={form.date} time={form.time}
+                  onDateChange={set('date')} onTimeChange={set('time')}
+                  timeSlots={timeSlots}
+                  doctorSchedules={doctorSchedules}
+                  unavailableDates={doctorUnavailableDates}
+                />
+              )}
+              {step===4 && (
+                <StepDetails
+                  reason={form.reason}
+                  notes={form.notes}
+                  reasonOptions={reasonOptions}
+                  loadingReasons={loadingReasons}
+                  onReasonChange={set('reason')}
+                  onNotesChange={set('notes')}
+                />
+              )}
+              {step===5 && <StepConfirm form={form} policyAccepted={policyAccepted} onPolicyAcceptedChange={setPolicyAccepted} />}
+
+              {/* Nav */}
+              <div className="flex items-center justify-between mt-8 pt-5 border-t border-slate-100">
+                <button onClick={() => setStep(s=>s-1)} disabled={step===0}
+                  className="flex items-center gap-1.5 px-4 py-2.5 text-sm font-semibold text-slate-500
+                    border border-slate-200 rounded-xl hover:bg-slate-50 disabled:opacity-30 transition-all">
+                  <MdChevronLeft className="text-[16px]" /> Back
+                </button>
+                <p className="text-xs text-slate-400 font-medium">{step+1} / {STEPS.length}</p>
+                <button onClick={handleNext} disabled={!canNext()}
+                  className="flex items-center gap-1.5 px-5 py-2.5 text-sm font-bold text-white
+                    bg-emerald-500 hover:bg-emerald-600 rounded-xl disabled:opacity-30 transition-all
+                    shadow-lg shadow-emerald-500/20">
+                  {step===5 ? 'Confirm Booking' : 'Next'}
+                  {step<5 && <MdArrowForward className="text-[15px]" />}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default BookAppointment

@@ -1,0 +1,339 @@
+// client/src/pages/LandingPages/LandingPage.jsx
+// FIX: Contact info cards now render actual icons (MdLocationOn, MdPhone, MdAccessTime)
+//      instead of the empty colored box that was rendering before.
+
+import { NavLink } from 'react-router-dom'
+import { useEffect, useState } from 'react'
+import { getPublicLandingPage } from '../../services/landing.service'
+import { isExternalPath, normalizeAppPath } from '../../utils/navigation'
+import { MdLocationOn, MdPhone, MdAccessTime } from 'react-icons/md'
+
+const cardBg = ['bg-blue-50', 'bg-green-50', 'bg-purple-50', 'bg-yellow-50', 'bg-red-50', 'bg-slate-50']
+
+// ── Contact Info Card with real icon ─────────────────────────────────────────
+const InfoCard = ({ title, children, tone }) => {
+  const toneMap = {
+    blue:  { wrap: 'bg-blue-50',    iconBg: 'bg-blue-600',  titleColor: 'text-blue-700',  Icon: MdLocationOn  },
+    green: { wrap: 'bg-green-50',   iconBg: 'bg-green-600', titleColor: 'text-green-700', Icon: MdPhone       },
+    teal:  { wrap: 'bg-[#E6F4F1]',  iconBg: 'bg-teal-700',  titleColor: 'text-teal-800',  Icon: MdAccessTime  },
+  }
+  const { wrap, iconBg, titleColor, Icon } = toneMap[tone] || toneMap.blue
+
+  return (
+    <div className={`${wrap} p-4 sm:p-6 rounded-2xl hover:shadow-md transition flex gap-3 sm:gap-4 items-start`}>
+      <div className={`${iconBg} text-white p-3 rounded-xl mt-1 shrink-0`}>
+        <Icon className="w-5 h-5 text-white" />
+      </div>
+      <div>
+        <h3 className={`font-semibold text-lg mb-1 ${titleColor}`}>{title}</h3>
+        {children}
+      </div>
+    </div>
+  )
+}
+
+const LandingPage = () => {
+  const [content, setContent] = useState(null)
+
+  useEffect(() => {
+    getPublicLandingPage()
+      .then(data => setContent(data?.content || null))
+      .catch(() => setContent(null))
+  }, [])
+
+  if (!content) {
+    return <div className="min-h-[60vh] flex items-center justify-center text-sm text-slate-400">Loading landing page...</div>
+  }
+
+  const { hero, about, testimonial, services, doctors, contact } = content
+  const primaryButtonPath   = normalizeAppPath(hero.primary_button_path,   '/patient/register')
+  const secondaryButtonPath = normalizeAppPath(hero.secondary_button_path, '#about')
+  const contactCtaPath      = normalizeAppPath(contact.cta_path,           '/patient/register')
+
+  // address_lines can be an array from DB
+  const addressLines = Array.isArray(contact.address_lines)
+    ? contact.address_lines.filter(Boolean)
+    : typeof contact.address_lines === 'string'
+      ? contact.address_lines.split('\n')
+      : []
+
+  // hours can be multiline
+  const hoursText = typeof contact.hours === 'string' ? contact.hours : ''
+
+  return (
+    <>
+      {/* Hero section */}
+      <section
+        id={hero.section_id || 'home'}
+        className="relative isolate min-h-screen overflow-hidden px-4 sm:px-6 lg:px-10"
+      >
+        {/* Background */}
+        <img
+          src={hero.background_image_url || '/homeBG.png'}
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 z-0 h-full w-full object-cover"
+          onError={(event) => {
+            event.currentTarget.src = '/homeBG.png'
+          }}
+        />
+
+        {/* Overlay */}
+        <div
+          className="pointer-events-none absolute inset-0 z-10"
+          style={{
+            backgroundColor: 'rgba(255, 255, 255, 0.55)',
+          }}
+        />
+
+        {/* Hero content */}
+        <div className="relative z-20 mx-auto flex min-h-screen max-w-5xl flex-col justify-center gap-6 text-center md:text-left">
+          <h1 className="text-3xl font-bold leading-tight text-gray-800 sm:text-4xl md:text-5xl">
+            {hero.heading
+              ?.replace(hero.heading_highlight || '', '')
+              .trim()}
+
+            {hero.heading_highlight && <br />}
+
+            {hero.heading_highlight && (
+              <span className="text-blue-600">
+                {hero.heading_highlight}
+              </span>
+            )}
+          </h1>
+
+          <p className="max-w-2xl text-lg leading-relaxed text-gray-700">
+            {hero.description}
+          </p>
+
+          <h3 className="text-xl font-semibold text-gray-800">
+            {hero.subheading}
+          </h3>
+
+          <div className="mt-4 flex flex-col gap-4 sm:flex-row">
+            {isExternalPath(primaryButtonPath) ? (
+              <a
+                href={primaryButtonPath}
+                className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                {hero.primary_button_label}
+              </a>
+            ) : (
+              <NavLink
+                to={primaryButtonPath}
+                className="rounded-lg bg-blue-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-blue-700"
+              >
+                {hero.primary_button_label}
+              </NavLink>
+            )}
+
+            <a
+              href={secondaryButtonPath}
+              className="rounded-lg border text-base border-blue-600 px-6 py-3 font-semibold text-blue-600 transition hover:bg-blue-50"
+            >
+              {hero.secondary_button_label}
+            </a>
+          </div>
+        </div>
+      </section>
+
+      {/* ── About ────────────────────────────────────────────────────────── */}
+      <section id={about.section_id || 'about'} className="px-4 py-16 bg-white scroll-mt-24 sm:px-6 sm:py-20 lg:px-10 lg:py-24">
+        <div className="max-w-7xl mx-auto grid md:grid-cols-2 gap-10 lg:gap-14 items-center">
+          <div className="relative">
+            <img
+              src={about.image_url}
+              alt={about.image_alt || 'About clinic'}
+              className="rounded-2xl shadow-lg w-full object-cover"
+            />
+
+            <div className="mt-4 w-fit rounded-xl bg-blue-600 px-5 py-3 text-white shadow-lg sm:absolute sm:-bottom-6 sm:-right-2 sm:mt-0 sm:px-6 sm:py-4 lg:-right-6">
+              <p className="text-2xl font-bold">{about.badge_title}</p>
+              <p className="text-sm">{about.badge_text}</p>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-6">
+            <h2 className="text-3xl font-bold text-gray-800 sm:text-4xl">{about.heading}</h2>
+            <p className="text-gray-600 leading-relaxed text-lg">{about.body_primary}</p>
+            <p className="text-gray-600 leading-relaxed">{about.body_secondary}</p>
+
+            <div className="grid sm:grid-cols-2 gap-6 mt-4">
+              <div className="bg-blue-50 p-6 rounded-xl hover:shadow-md transition">
+                <h3 className="font-semibold text-lg text-blue-700 mb-2">{about.mission_title}</h3>
+                <p className="text-gray-600 text-sm">{about.mission_body}</p>
+              </div>
+
+              <div className="bg-green-50 p-6 rounded-xl hover:shadow-md transition">
+                <h3 className="font-semibold text-lg text-green-700 mb-2">{about.vision_title}</h3>
+                <p className="text-gray-600 text-sm">{about.vision_body}</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-16 max-w-7xl mx-auto sm:mt-20 lg:mt-24">
+          <div className="grid md:grid-cols-2 items-center gap-8 lg:gap-10 bg-[#E6F4F1] rounded-2xl shadow-lg p-6 sm:p-8 lg:p-12">
+            <div className="flex flex-col gap-4">
+              <h2 className="text-3xl font-semibold text-teal-800 sm:text-4xl">{testimonial.heading}</h2>
+              <p className="text-teal-600 font-medium text-lg">{testimonial.subheading}</p>
+              <p className="text-teal-700 leading-relaxed text-lg max-w-md">"{testimonial.quote}"</p>
+            </div>
+
+            <div className="relative">
+              <img
+                src={testimonial.image_url}
+                alt={testimonial.image_alt || 'Patient Feedback'}
+                className="rounded-2xl shadow-lg w-full object-cover"
+              />
+              <div className="absolute -bottom-4 left-0 w-24 h-1 bg-teal-800 rounded" />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* ── Services ─────────────────────────────────────────────────────── */}
+      <section id={services.section_id || 'services'} className="px-4 py-16 bg-gradient-to-b from-gray-50 to-white sm:px-6 sm:py-20 lg:px-10 lg:py-24">
+        <div className="text-center mb-10 sm:mb-14 lg:mb-16">
+          <h1 className="text-3xl font-bold text-gray-800 sm:text-4xl">{services.heading}</h1>
+          <p className="text-gray-600 mt-4 max-w-2xl mx-auto text-lg">{services.description}</p>
+        </div>
+
+        <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 sm:gap-8 lg:gap-10 max-w-7xl mx-auto">
+          {(services.items || []).map((service, index) => (
+            <div
+              key={`${service.name}-${index}`}
+              className={`rounded-2xl p-6 sm:p-8 shadow-sm hover:shadow-xl transition duration-300 transform hover:-translate-y-2 ${service.bg || cardBg[index % cardBg.length]}`}
+            >
+              <div className="flex justify-center mb-6 overflow-hidden">
+                <img
+                  src={service.image}
+                  alt={service.name}
+                  className="w-32 h-32 object-contain transition duration-300 hover:scale-110"
+                />
+              </div>
+
+              <h3 className="text-xl font-semibold text-gray-800 mb-3 text-center">{service.name}</h3>
+              <p className="text-gray-600 text-sm leading-relaxed text-center">{service.description}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Doctors ──────────────────────────────────────────────────────── */}
+      <section id={doctors.section_id || 'doctors'} className="px-4 py-16 bg-gray-50 scroll-mt-24 sm:px-6 sm:py-20 lg:px-10 lg:py-24">
+        <div className="text-center mb-10 sm:mb-14 lg:mb-16">
+          <h1 className="text-3xl font-bold text-gray-800 sm:text-4xl">{doctors.heading}</h1>
+          <p className="text-gray-600 mt-4 max-w-2xl mx-auto text-lg">{doctors.description}</p>
+        </div>
+
+        <div className="grid md:grid-cols-2 gap-6 sm:gap-8 lg:gap-10 max-w-7xl mx-auto">
+          {(doctors.items || []).map((doctor, index) => (
+            <div
+              key={`${doctor.name}-${index}`}
+              className="bg-white rounded-2xl p-6 shadow-sm hover:shadow-lg transition transform hover:-translate-y-2 flex flex-col items-center text-center"
+            >
+              <div className="w-32 h-32 mb-4 rounded-full overflow-hidden border-4 border-blue-100">
+                <img
+                  src={doctor.image}
+                  alt={doctor.name}
+                  className="w-full h-full object-cover"
+                />
+              </div>
+
+              <h3 className="text-xl font-semibold text-gray-800 mb-1">{doctor.name}</h3>
+              <p className="text-blue-600 font-medium mb-3">{doctor.specialize}</p>
+              <p className="text-gray-600 text-sm leading-relaxed">{doctor.description}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* ── Contact ──────────────────────────────────────────────────────── */}
+      <section id={contact.section_id || 'contact'} className="px-4 py-16 bg-white scroll-mt-24 sm:px-6 sm:py-20 lg:px-10 lg:py-24">
+        <div className="max-w-7xl mx-auto">
+          <div className="text-center mb-10 sm:mb-14 lg:mb-16">
+            <h2 className="text-4xl font-bold text-gray-800 mb-4">{contact.heading}</h2>
+            <p className="text-gray-600 text-lg max-w-xl mx-auto">{contact.description}</p>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-8 lg:gap-14 items-stretch">
+            {/* LEFT — Contact Info with icons */}
+            <div className="flex flex-col gap-5 justify-center">
+              {/* Our Location */}
+              <InfoCard title={contact.location_title || 'Our Location'} tone="blue">
+                <p className="text-gray-600 text-sm leading-relaxed">
+                  {addressLines.map((line, index) => (
+                    <span key={`addr-${index}`}>
+                      {line}
+                      {index < addressLines.length - 1 && <br />}
+                    </span>
+                  ))}
+                </p>
+              </InfoCard>
+
+              {/* Phone Number */}
+              <InfoCard title={contact.phone_title || 'Phone Number'} tone="green">
+                <p className="text-gray-600 text-sm">{contact.phone}</p>
+              </InfoCard>
+
+              {/* Clinic Hours */}
+              <InfoCard title={contact.hours_title || 'Clinic Hours'} tone="teal">
+                <p className="text-gray-600 text-sm leading-relaxed whitespace-pre-line">{hoursText}</p>
+              </InfoCard>
+            </div>
+
+            {/* RIGHT — Google Map */}
+            {contact.map_embed_url ? (
+              <div className="rounded-2xl overflow-hidden shadow-lg w-full min-h-[400px]">
+                <iframe
+                  src={contact.map_embed_url}
+                  width="100%"
+                  height="100%"
+                  style={{ border: 0, minHeight: '400px' }}
+                  allowFullScreen=""
+                  loading="lazy"
+                  referrerPolicy="no-referrer-when-downgrade"
+                  title={`${contact.location_title || 'Clinic'} Map`}
+                />
+              </div>
+            ) : (
+              <div className="rounded-2xl bg-slate-100 w-full min-h-[400px] flex items-center justify-center">
+                <p className="text-slate-400 text-sm">Map not configured</p>
+              </div>
+            )}
+          </div>
+
+          {/* CTA Banner */}
+          {contact.cta_heading && (
+            <div className="mt-12 bg-[#E6F4F1] rounded-2xl shadow-lg p-6 sm:p-8 lg:p-10 flex flex-col md:flex-row items-center justify-between gap-6 lg:mt-16">
+              <div>
+                <h3 className="text-2xl font-semibold text-teal-800 mb-1">{contact.cta_heading}</h3>
+                {contact.cta_description && (
+                  <p className="text-teal-700 text-sm">{contact.cta_description}</p>
+                )}
+              </div>
+              {isExternalPath(contactCtaPath) ? (
+                <a
+                  href={contactCtaPath}
+                  className="bg-blue-600 text-white text-sm font-semibold px-6 py-3 rounded-lg hover:bg-blue-700 transition duration-300 whitespace-nowrap"
+                >
+                  {contact.cta_label}
+                </a>
+              ) : (
+                <NavLink
+                  to={contactCtaPath}
+                  className="bg-blue-600 text-white text-sm font-semibold px-6 py-3 rounded-lg hover:bg-blue-700 transition duration-300 whitespace-nowrap"
+                >
+                  {contact.cta_label}
+                </NavLink>
+              )}
+            </div>
+          )}
+        </div>
+      </section>
+    </>
+  )
+}
+
+export default LandingPage

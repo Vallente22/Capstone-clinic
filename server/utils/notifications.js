@@ -1,0 +1,73 @@
+const db = require('../db/connect')
+const { broadcast } = require('./sse')
+
+const createNotification = async ({
+  target_role,
+  target_user_id = null,
+  type,
+  title,
+  message,
+  reference_type = null,
+  reference_id = null,
+  body = null,
+  link = null,
+}) => {
+  const [result] = await db.query(
+    `INSERT INTO notifications
+      (target_role, target_user_id, type, title, message, reference_type, reference_id, body, link)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [target_role, target_user_id, type, title, message, reference_type, reference_id, body, link]
+  )
+
+  const notification = {
+    id: result.insertId,
+    target_role,
+    target_user_id,
+    type,
+    title,
+    message,
+    reference_type,
+    reference_id,
+    body,
+    link,
+  }
+  broadcast(target_user_id ? [target_role, `${target_role}_${target_user_id}`] : target_role, 'notification_created', notification)
+  return notification
+}
+
+const notifyRoles = async (roles, payload) => {
+  await Promise.all(roles.map(role => createNotification({ ...payload, target_role: role })))
+}
+
+const getNotifications = async (role, userId = null, limit = 20) => {
+  const requested = Number(limit)
+  const safeLimit = Math.min(100, Math.max(1, Number.isFinite(requested) ? Math.floor(requested) : 20))
+  const [rows] = await db.query(
+    `SELECT *
+     FROM notifications
+     WHERE target_role = ?
+       AND (target_user_id IS NULL OR target_user_id = ?)
+     ORDER BY created_at DESC
+     LIMIT ?`,
+    [role, userId, safeLimit]
+  )
+  return rows
+}
+
+const markNotificationRead = async (id, role, userId = null) => {
+  await db.query(
+    `UPDATE notifications
+     SET is_read = 1
+     WHERE id = ?
+       AND target_role = ?
+       AND (target_user_id IS NULL OR target_user_id = ?)`,
+    [id, role, userId]
+  )
+}
+
+module.exports = {
+  createNotification,
+  notifyRoles,
+  getNotifications,
+  markNotificationRead,
+}

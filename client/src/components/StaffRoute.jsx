@@ -1,0 +1,17 @@
+// client/src/components/StaffRoute.jsx
+import { Navigate } from 'react-router-dom'
+import { useAuth } from '../context/AuthContext'
+
+const StaffRoute = ({ children }) => {
+  const { user, role, ready } = useAuth()
+  if (!ready) return (
+    <div className="flex items-center justify-center h-screen">
+      <div className="w-8 h-8 border-4 border-slate-200 border-t-sky-500 rounded-full animate-spin" />
+    </div>
+  )
+  if (!user || role !== 'staff') return <Navigate to="/staff/login" replace />
+  if (user.must_change_password) return <Navigate to="/staff/change-password-required" replace />
+  return children
+}
+
+export default StaffRoute
